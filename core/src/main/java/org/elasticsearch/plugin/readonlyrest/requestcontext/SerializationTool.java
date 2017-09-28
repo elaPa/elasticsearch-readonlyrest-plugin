@@ -22,23 +22,29 @@ import com.fasterxml.jackson.core.Version;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.module.SimpleModule;
 import com.google.common.collect.Maps;
+import com.google.common.collect.Sets;
 
 import java.security.AccessController;
 import java.security.PrivilegedAction;
 import java.text.SimpleDateFormat;
-import java.util.Collections;
-import java.util.LinkedHashMap;
-import java.util.Map;
-import java.util.TimeZone;
+import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * Created by sscarduzio on 28/06/2017.
  */
 public class SerializationTool {
   private final static SimpleDateFormat zuluFormat = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'");
+  private final static Set<String> whitelistedHeaders;
 
   static {
     zuluFormat.setTimeZone(TimeZone.getTimeZone("GMT"));
+
+    if (System.getProperty("whitelistedHeaders") != null) {
+      whitelistedHeaders = Sets.newHashSet(System.getProperty("whitelistedHeaders").split(","));
+    } else {
+      whitelistedHeaders = new HashSet<>();
+    }
   }
 
   private final ObjectMapper mapper;
@@ -86,12 +92,19 @@ public class SerializationTool {
     map.put("req_method", req.getMethod().name());
     map.put("headers", req.getHeaders().keySet());
     map.put("path", req.getUri());
+    if (whitelistedHeaders.size() > 0) {
+      Map<String, String> filteredHeardes = req.getHeaders().entrySet().stream()
+              .filter(entry -> whitelistedHeaders.contains(entry.getKey()))
+              .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+      map.put("whitelisted_headers", filteredHeardes);
+    }
 
     map.put("user", req.getLoggedInUser().isPresent() ? req.getLoggedInUser().get().getId() : null);
 
     map.put("action", req.getAction());
     map.put("indices", req.involvesIndices() ? req.getIndices() : Collections.emptySet());
     map.put("acl_history", req.getHistory().toString());
+    map.put("body", req.getContent());
 
     // The cumbersome, awkward security handling in Java. (TM) #securityAgainstProductivity
     final String[] res = new String[1];
