@@ -18,15 +18,19 @@
 package tech.beshu.ror.acl.blocks.rules.impl;
 
 import com.google.common.base.Strings;
-import tech.beshu.ror.commons.shims.es.ESContext;
-import tech.beshu.ror.commons.shims.es.LoggerShim;
+import cz.seznam.euphoria.shaded.guava.com.google.common.net.InetAddresses;
 import tech.beshu.ror.acl.blocks.rules.RuleExitResult;
 import tech.beshu.ror.acl.blocks.rules.SyncRule;
 import tech.beshu.ror.acl.domain.IPMask;
 import tech.beshu.ror.acl.domain.Value;
+import tech.beshu.ror.commons.shims.es.ESContext;
+import tech.beshu.ror.commons.shims.es.LoggerShim;
 import tech.beshu.ror.requestcontext.RequestContext;
 import tech.beshu.ror.settings.rules.HostsRuleSettings;
+import tech.beshu.ror.settings.rules.XForwardedForRuleSettings;
 
+import java.net.Inet4Address;
+import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.util.Map;
 import java.util.Set;
@@ -99,12 +103,19 @@ public class HostsSyncRule extends SyncRule {
       );
   }
 
-  private boolean ipMatchesAddress(String hostString, String address) {
+  private boolean ipMatchesAddress(String allowedHost, String address) {
     try {
-      IPMask ip = IPMask.getIPMask(hostString);
+      String allowedResolvedIp = allowedHost;
+
+      if(!XForwardedForRuleSettings.isInetAddressOrBlock(allowedHost)) {
+        // Super-late DNS resolution
+        allowedResolvedIp = InetAddress.getByName(allowedHost).getHostAddress();
+      }
+
+      IPMask ip = IPMask.getIPMask(allowedResolvedIp);
       return ip.matches(address);
     } catch (UnknownHostException e) {
-      logger.warn("Cannot resolve configured host name! " + e.getClass().getSimpleName() + ": " + hostString);
+      logger.warn("Cannot resolve configured host name! " + e.getClass().getSimpleName() + ": " + allowedHost);
       return false;
     }
   }

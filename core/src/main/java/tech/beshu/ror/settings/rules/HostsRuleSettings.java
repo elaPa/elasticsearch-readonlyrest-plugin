@@ -17,7 +17,7 @@
 package tech.beshu.ror.settings.rules;
 
 import tech.beshu.ror.acl.domain.Value;
-import tech.beshu.ror.commons.RawSettings;
+import tech.beshu.ror.commons.settings.RawSettings;
 import tech.beshu.ror.settings.RuleSettings;
 
 import java.util.Set;
@@ -34,7 +34,7 @@ public class HostsRuleSettings implements RuleSettings {
   private final Set<Value<String>> allowedAddresses;
   private final boolean acceptXForwardedForHeader;
 
-  private HostsRuleSettings(Set<Value<String>> allowedAddresses, boolean acceptXForwardedForHeader) {
+  public HostsRuleSettings(Set<Value<String>> allowedAddresses, boolean acceptXForwardedForHeader) {
     this.allowedAddresses = allowedAddresses;
     this.acceptXForwardedForHeader = acceptXForwardedForHeader;
   }

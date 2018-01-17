@@ -21,30 +21,40 @@ package tech.beshu.ror.es;
  * Created by sscarduzio on 28/11/2016.
  */
 
+import cz.seznam.euphoria.shaded.guava.com.google.common.base.Joiner;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.network.NetworkService;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.util.BigArrays;
+import org.elasticsearch.env.Environment;
 import org.elasticsearch.http.netty.NettyHttpServerTransport;
-import tech.beshu.ror.commons.BasicSettings;
-import tech.beshu.ror.commons.SSLCertParser;
-import tech.beshu.ror.commons.RawSettings;
-import tech.beshu.ror.commons.utils.TempFile;
 import org.jboss.netty.channel.ChannelPipeline;
 import org.jboss.netty.channel.ChannelPipelineFactory;
 import org.jboss.netty.handler.ssl.SslContext;
+import tech.beshu.ror.commons.SSLCertParser;
+import tech.beshu.ror.commons.settings.BasicSettings;
+import tech.beshu.ror.commons.shims.es.LoggerShim;
+import tech.beshu.ror.commons.utils.TempFile;
 
 import java.io.File;
+import java.util.List;
 import java.util.Optional;
 
 public class SSLTransport extends NettyHttpServerTransport {
 
   private final BasicSettings sslSettings;
+  private final LoggerShim loggerShim;
 
   @Inject
   public SSLTransport(Settings settings, NetworkService networkService, BigArrays bigArrays) {
     super(settings, networkService, bigArrays);
-    this.sslSettings = new BasicSettings(new RawSettings(settings.getAsStructuredMap()));
+    loggerShim = ESContextImpl.mkLoggerShim(logger);
+    Environment env = new Environment(settings);
+    BasicSettings baseSettings = BasicSettings.fromFile(loggerShim, env.configFile().toAbsolutePath(), settings.getAsStructuredMap());
+    this.sslSettings = baseSettings;
+    if (sslSettings.isSSLEnabled()) {
+      logger.info("creating SSL transport");
+    }
   }
 
   @Override
@@ -62,14 +72,35 @@ public class SSLTransport extends NettyHttpServerTransport {
         try {
           File chainFile = TempFile.newFile("fullchain", "pem", certChain);
           File privatekeyFile = TempFile.newFile("privkey", "pem", privateKey);
+          List<String> ciphers = sslSettings.getAllowedSSLCiphers().orElse(null);
+          List<String> protocols = sslSettings.getAllowedSSLProtocols().orElse(null);
+
+          SslContext sslContext = SslContext.newServerContext(
+            null,
+            null,
+            chainFile,
+            privatekeyFile,
+            null,
+            ciphers,
+            protocols,
+            0, 0
+          );
+
+          if (ciphers != null) {
+            logger.info("ROR SSL accepted ciphers: " + Joiner.on(",").join(ciphers));
+          }
+          if (protocols != null) {
+            logger.info("ROR SSL accepted protocols: " + Joiner.on(",").join(protocols));
+          }
+
 
           // #TODO expose configuration of sslPrivKeyPem password? Letsencrypt never sets one..
-          context = Optional.of(SslContext.newServerContext(chainFile, privatekeyFile, null));
+          context = Optional.of(sslContext);
 
         } catch (Exception e) {
           context = Optional.empty();
-          logger.error("Failed to load SSL CertChain & private key from Keystore!");
-          e.printStackTrace();
+          logger.error("Failed to load SSL CertChain & private key from Keystore! "
+                         + e.getClass().getSimpleName() + ": " + e.getMessage(), e);
         }
       });
 

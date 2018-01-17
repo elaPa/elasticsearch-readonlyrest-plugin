@@ -18,12 +18,10 @@
 package tech.beshu.ror.es;
 
 import org.elasticsearch.rest.RestChannel;
-import org.elasticsearch.rest.RestRequest;
 
 /**
  * Created by sscarduzio on 25/11/2016.
  */
 public class ThreadRepo {
   public static ThreadLocal<RestChannel> channel = new ThreadLocal<>();
-  public static ThreadLocal<Long> taskId = new ThreadLocal<>();
 }

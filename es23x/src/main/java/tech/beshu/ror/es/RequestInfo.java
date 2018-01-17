@@ -45,7 +45,9 @@ import org.elasticsearch.index.Index;
 import org.elasticsearch.index.IndexNotFoundException;
 import org.elasticsearch.rest.RestChannel;
 import org.elasticsearch.rest.RestRequest;
+import org.elasticsearch.search.builder.SearchSourceBuilder;
 import org.elasticsearch.threadpool.ThreadPool;
+import org.reflections.ReflectionUtils;
 import tech.beshu.ror.commons.shims.es.ESContext;
 import tech.beshu.ror.commons.shims.es.LoggerShim;
 import tech.beshu.ror.commons.shims.request.RequestInfoShim;
@@ -56,7 +58,7 @@ import java.lang.reflect.Field;
 import java.net.InetSocketAddress;
 import java.security.AccessController;
 import java.security.PrivilegedAction;
-import java.util.List;
+import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
 import java.util.SortedMap;
@@ -74,7 +76,6 @@ public class RequestInfo implements RequestInfoShim {
   private final ClusterService clusterService;
   private final Long taskId;
   private final IndexNameExpressionResolver indexResolver;
-  private final ThreadPool threadPool;
   private final LoggerShim logger;
   private final RestChannel channel;
   private String content = null;
@@ -82,11 +83,10 @@ public class RequestInfo implements RequestInfoShim {
   private ESContext context;
 
   RequestInfo(
-    RestChannel channel, String action, ActionRequest actionRequest,
-    ClusterService clusterService, ThreadPool threadPool, ESContext context, IndexNameExpressionResolver indexResolver) {
+    RestChannel channel, Long taskId, String action, ActionRequest actionRequest,
+    ClusterService clusterService, ESContext context, IndexNameExpressionResolver indexResolver) {
     this.context = context;
     this.logger = context.logger(getClass());
-    this.threadPool = threadPool;
     this.request = channel.request();
     this.channel = channel;
     this.action = action;
@@ -94,10 +94,9 @@ public class RequestInfo implements RequestInfoShim {
     this.clusterService = clusterService;
     this.indexResolver = indexResolver;
     String tmpID = request.hashCode() + "-" + actionRequest.hashCode();
-    Long taskId = ThreadRepo.taskId.get();
+
     if (taskId != null) {
       this.id = tmpID + "#" + taskId;
-      ThreadRepo.taskId.remove();
       this.taskId = taskId;
     }
     else {
@@ -135,9 +134,6 @@ public class RequestInfo implements RequestInfoShim {
         opts = ((IndicesRequest) actionRequest).indicesOptions();
       }
 
-      if (actionRequest instanceof IndicesRequest) {
-        opts = ((IndicesRequest) actionRequest).indicesOptions();
-      }
       String[] concreteIdxNames = {};
       try {
         concreteIdxNames = indexResolver.concreteIndices(clusterService.state(), opts, ixs);
@@ -326,12 +322,16 @@ public class RequestInfo implements RequestInfoShim {
   @Override
   public void writeIndices(Set<String> newIndices) {
     // Setting indices by reflection..
+    newIndices.remove("<no-index>");
+    newIndices.remove("");
+
     // Best case, this request is designed to have indices replaced.
     if (actionRequest instanceof IndicesRequest.Replaceable) {
       ((IndicesRequest.Replaceable) actionRequest).indices(newIndices.toArray(new String[newIndices.size()]));
       return;
     }
 
+    // This should not be necessary anymore because nowadays we either allow or forbid write requests.
     if (actionRequest instanceof BulkShardRequest) {
       BulkShardRequest bsr = (BulkShardRequest) actionRequest;
       String singleIndex = newIndices.iterator().next();
@@ -351,35 +351,84 @@ public class RequestInfo implements RequestInfoShim {
       });
     }
 
+    if (actionRequest instanceof MultiSearchRequest) {
+      // If it's an empty MSR, we are ok
+      MultiSearchRequest msr = (MultiSearchRequest) actionRequest;
+      for (SearchRequest sr : msr.requests()) {
+
+        // This contains global indices
+        if (sr.indices().length == 0 || Sets.newHashSet(sr.indices()).contains("*")) {
+          sr.indices(newIndices.toArray(new String[newIndices.size()]));
+          continue;
+        }
+
+        // This transforms wildcards and aliases in concrete indices
+        Set<String> expandedSrIndices = getExpandedIndices(Sets.newHashSet(sr.indices()));
+
+        Set<String> remaining = Sets.newHashSet(expandedSrIndices);
+        remaining.retainAll(newIndices);
+
+        if (remaining.size() == 0) {
+          // contained just forbidden indices, should return zero results
+          sr.source(new SearchSourceBuilder().size(0));
+          continue;
+        }
+        if (remaining.size() == expandedSrIndices.size()) {
+          // contained all allowed indices
+          continue;
+        }
+        // some allowed indices were there, restrict query to those
+        sr.indices(remaining.toArray(new String[remaining.size()]));
+      }
+      // All the work is done - no need for reflection
+      return;
+    }
+
+    if (actionRequest instanceof MultiGetRequest) {
+      MultiGetRequest mgr = (MultiGetRequest) actionRequest;
+      Iterator<MultiGetRequest.Item> it = mgr.getItems().iterator();
+      while (it.hasNext()) {
+        MultiGetRequest.Item item = it.next();
+        // One item contains just an index, but can be an alias
+        Set<String> indices = getExpandedIndices(Sets.newHashSet(item.indices()));
+        indices.retainAll(newIndices);
+        if (indices.isEmpty()) {
+          it.remove();
+        }
+      }
+      // All the work is done - no need for reflection
+      return;
+    }
+
+    if (actionRequest instanceof IndicesAliasesRequest) {
+      IndicesAliasesRequest iar = (IndicesAliasesRequest) actionRequest;
+      Iterator<IndicesAliasesRequest.AliasActions> it = iar.getAliasActions().iterator();
+      while (it.hasNext()) {
+        IndicesAliasesRequest.AliasActions act = it.next();
+        Set<String> indices = getExpandedIndices(Sets.newHashSet(act.indices()));
+        indices.retainAll(newIndices);
+        if (indices.isEmpty()) {
+          it.remove();
+          continue;
+        }
+        act.indices(indices.toArray(new String[indices.size()]));
+      }
+      // All the work is done - no need for reflection
+      return;
+    }
+
     // Optimistic reflection attempt
     boolean okSetResult = ReflecUtils.setIndices(actionRequest, Sets.newHashSet("index", "indices"), newIndices, logger);
 
-    if (!okSetResult && actionRequest instanceof MultiSearchRequest) {
-      // If it's an empty MSR, we are ok
-      okSetResult = true;
-      MultiSearchRequest msr = (MultiSearchRequest) actionRequest;
-      for (SearchRequest sr : msr.requests()) {
-        okSetResult &= ReflecUtils.setIndices(sr, Sets.newHashSet("indices"), newIndices, logger);
-      }
-    }
-
-    if (!okSetResult && actionRequest instanceof IndicesAliasesRequest) {
-      IndicesAliasesRequest iar = (IndicesAliasesRequest) actionRequest;
-      List<IndicesAliasesRequest.AliasActions> actions = iar.getAliasActions();
-      okSetResult = true;
-      for (IndicesAliasesRequest.AliasActions act : actions) {
-        act.indices(newIndices.toArray(new String[newIndices.size()]));
-      }
-    }
-
     if (okSetResult) {
-      logger.debug("success changing indices: " + newIndices + " correctly set");
+      if (logger.isDebugEnabled()) {
+        logger.debug("REFLECTION: success changing indices: " + newIndices + " correctly set as " + extractIndices());
+      }
     }
     else {
-      logger.error("Failed to set indices for type " + actionRequest.getClass().getSimpleName() +
+      logger.error("REFLECTION: Failed to set indices for type " + actionRequest.getClass().getSimpleName() +
                      "  in req id: " + extractId());
     }
-
   }
 
   @Override

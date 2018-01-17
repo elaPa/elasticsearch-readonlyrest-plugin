@@ -17,6 +17,7 @@
 
 package tech.beshu.ror.acl;
 
+import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
 import tech.beshu.ror.acl.blocks.Block;
 import tech.beshu.ror.acl.blocks.BlockExitResult;
@@ -41,6 +42,7 @@ import tech.beshu.ror.utils.FuturesSequencer;
 
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
@@ -59,11 +61,11 @@ public class ACL {
 
   private final DefinitionsFactory definitionsFactory;
   private final RorSettings rorSettings;
-  private ESContext context;
   private final SerializationTool serTool;
+  private ESContext context;
 
   public ACL(ESContext context) {
-    serTool = context.getSettings().isAuditorCollectorEnabled() ? new SerializationTool() : null;
+    serTool = context.getSettings().isAuditorCollectorEnabled() ? new SerializationTool(context) : null;
     this.rorSettings = new RorSettings(context.getSettings().getRaw());
     this.logger = context.logger(getClass());
     this.context = context;
@@ -159,7 +161,7 @@ public class ACL {
     RequestContext rc = mkRequestContext(rInfo);
 
     // Run the blocks through
-    doCheck(rc, h)
+    doCheck(rc)
 
       // Handle different exceptions meanings
       .exceptionally(throwable -> {
@@ -197,20 +199,19 @@ public class ACL {
         // MATCH A FORBIDDEN BLOCK
         else {
           doLog(new ResponseContext(FinalState.FORBIDDEN, rc, null, result.getBlock().getVerbosity(), result.getBlock().toString(), true));
-
           h.onForbidden();
           return null;
         }
       })
-    .exceptionally(th -> {
-      h.onErrored(th);
-      th.printStackTrace();
-      doLog(new ResponseContext(FinalState.ERRORED, rc, th, null, "error", false));
-      return null;
-    });
+      .exceptionally(th -> {
+        h.onErrored(th);
+        th.printStackTrace();
+        doLog(new ResponseContext(FinalState.ERRORED, rc, th, null, "error", false));
+        return null;
+      });
   }
 
-  private CompletableFuture<BlockExitResult> doCheck(RequestContext rc, ACLHandler h) {
+  private CompletableFuture<BlockExitResult> doCheck(RequestContext rc) {
     logger.debug("checking request:" + rc.getId());
     return FuturesSequencer.runInSeqUntilConditionIsUndone(
       blocks.iterator(),
@@ -219,6 +220,7 @@ public class ACL {
         return block.check(rc);
       },
       (block, checkResult) -> {
+
         if (checkResult.isMatch()) {
           boolean isAllowed = checkResult.getBlock().getPolicy().equals(BlockPolicy.ALLOW);
           if (isAllowed) {
@@ -282,8 +284,23 @@ public class ACL {
       }
 
       @Override
+      public String getMethodString() {
+        return getMethod().name();
+      }
+
+      @Override
+      public Optional<String> getLoggedInUserName() {
+        return getLoggedInUser().map(u -> u.getId());
+      }
+
+      @Override
       public String getUri() {
         return rInfo.extractURI();
+      }
+
+      @Override
+      public String getHistoryString() {
+        return  Joiner.on(", ").join(getHistory());
       }
 
       @Override

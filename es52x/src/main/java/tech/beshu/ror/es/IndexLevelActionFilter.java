@@ -17,7 +17,7 @@
 
 package tech.beshu.ror.es;
 
-import org.elasticsearch.ElasticsearchException;
+import org.elasticsearch.ElasticsearchStatusException;
 import org.elasticsearch.ResourceNotFoundException;
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.ActionRequest;
@@ -31,23 +31,18 @@ import org.elasticsearch.common.component.AbstractComponent;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.inject.Singleton;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.common.xcontent.ToXContent;
-import org.elasticsearch.common.xcontent.XContentBuilder;
-import org.elasticsearch.common.xcontent.json.JsonXContent;
-import org.elasticsearch.rest.BytesRestResponse;
+import org.elasticsearch.env.Environment;
 import org.elasticsearch.rest.RestChannel;
 import org.elasticsearch.rest.RestStatus;
 import org.elasticsearch.tasks.Task;
 import org.elasticsearch.threadpool.ThreadPool;
-import org.elasticsearch.transport.TransportService;
 import tech.beshu.ror.acl.ACL;
-import tech.beshu.ror.commons.BasicSettings;
-import tech.beshu.ror.commons.RawSettings;
+import tech.beshu.ror.commons.settings.BasicSettings;
+import tech.beshu.ror.commons.settings.RawSettings;
 import tech.beshu.ror.commons.shims.es.ACLHandler;
 import tech.beshu.ror.commons.shims.es.ESContext;
 import tech.beshu.ror.commons.shims.es.LoggerShim;
 
-import java.io.IOException;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -62,37 +57,37 @@ public class IndexLevelActionFilter extends AbstractComponent implements ActionF
   private final ClusterService clusterService;
 
   private final AtomicReference<Optional<ACL>> acl;
-  private final AtomicReference<ESContext> context;
-  private final NodeClient client;
-  private final LoggerShim logger;
+  private final AtomicReference<ESContext> context = new AtomicReference<>();
   private final IndexNameExpressionResolver indexResolver;
+  private final LoggerShim loggerShim;
 
   @Inject
   public IndexLevelActionFilter(Settings settings,
                                 ClusterService clusterService,
-                                TransportService transportService,
                                 NodeClient client,
                                 ThreadPool threadPool,
-                                SettingsObservableImpl settingsObservable,
-                                IndexNameExpressionResolver indexResolver
-  )
-    throws IOException {
+                                SettingsObservableImpl settingsObservable
+  ) {
     super(settings);
+    loggerShim = ESContextImpl.mkLoggerShim(logger);
 
-    this.context = new AtomicReference<>(new ESContextImpl(client, new BasicSettings(new RawSettings(settingsObservable.getCurrent()))));
-    this.logger = context.get().logger(getClass());
+    Environment env = new Environment(settings);
+    BasicSettings baseSettings = BasicSettings.fromFile(loggerShim, env.configFile().toAbsolutePath(), settings.getAsStructuredMap());
+
+    this.context.set(new ESContextImpl(client, baseSettings));
 
     this.clusterService = clusterService;
-    this.indexResolver = indexResolver;
+    this.indexResolver = new IndexNameExpressionResolver(settings);
     this.threadPool = threadPool;
     this.acl = new AtomicReference<>(Optional.empty());
-    this.client = client;
-
-    new TaskManagerWrapper(settings).injectIntoTransportService(transportService, logger);
 
     settingsObservable.addObserver((o, arg) -> {
       logger.info("Settings observer refreshing...");
-      ESContext newContext = new ESContextImpl(client, new BasicSettings(new RawSettings(settingsObservable.getCurrent())));
+      RawSettings newRaw = new RawSettings(settingsObservable.getCurrent().asMap());
+      Environment newEnv = new Environment(settings);
+      BasicSettings newBaseSettings = new BasicSettings(newRaw, newEnv.configFile().toAbsolutePath());
+      ESContext newContext = new ESContextImpl(client, newBaseSettings);
+      this.context.set(newContext);
 
       if (newContext.getSettings().isEnabled()) {
         try {
@@ -101,6 +96,7 @@ public class IndexLevelActionFilter extends AbstractComponent implements ActionF
           logger.info("Configuration reloaded - ReadonlyREST enabled");
         } catch (Exception ex) {
           logger.error("Cannot configure ReadonlyREST plugin", ex);
+          throw ex;
         }
       }
       else {
@@ -113,7 +109,6 @@ public class IndexLevelActionFilter extends AbstractComponent implements ActionF
     logger.info("Readonly REST plugin was loaded...");
 
     settingsObservable.pollForIndex(context.get());
-
   }
 
 
@@ -154,11 +149,18 @@ public class IndexLevelActionFilter extends AbstractComponent implements ActionF
       chain.proceed(task, action, request, listener);
       return;
     }
-    RequestInfo requestInfo = new RequestInfo(channel, action, request, clusterService, threadPool, context.get(), indexResolver);
+    RequestInfo requestInfo = new RequestInfo(channel, task.getId(), action, request, clusterService, threadPool, context.get(), indexResolver);
     acl.check(requestInfo, new ACLHandler() {
       @Override
       public void onForbidden() {
-        sendNotAuthResponse(channel, context.get().getSettings());
+        ElasticsearchStatusException exc = new ElasticsearchStatusException(
+          context.get().getSettings().getForbiddenMessage(),
+          acl.doesRequirePassword() ? RestStatus.UNAUTHORIZED : RestStatus.FORBIDDEN
+        );
+        if (acl.doesRequirePassword()) {
+          exc.addHeader("WWW-Authenticate", "Basic");
+        }
+        listener.onFailure(exc);
       }
 
       @Override
@@ -170,6 +172,7 @@ public class IndexLevelActionFilter extends AbstractComponent implements ActionF
 //            request, (ActionListener<ActionResponse>) listener, rc, blockExitResult, context, acl
 //          );
 //          chain.proceed(task, action, request, aclActionListener);
+
 
           chain.proceed(task, action, request, listener);
           hasProceeded = true;
@@ -189,44 +192,15 @@ public class IndexLevelActionFilter extends AbstractComponent implements ActionF
 
       @Override
       public void onNotFound(Throwable throwable) {
-        sendNotFound((ResourceNotFoundException) throwable.getCause(), channel);
+        listener.onFailure((ResourceNotFoundException) throwable.getCause());
       }
 
       @Override
       public void onErrored(Throwable t) {
-        sendNotAuthResponse(channel, context.get().getSettings());
+        listener.onFailure((Exception) t);
       }
     });
 
-  }
-
-  private void sendNotAuthResponse(RestChannel channel, BasicSettings basicSettings) {
-    BytesRestResponse resp;
-    boolean doesRequirePassword = acl.get().map(ACL::doesRequirePassword).orElse(false);
-    if (doesRequirePassword) {
-      resp = new BytesRestResponse(RestStatus.UNAUTHORIZED, BytesRestResponse.TEXT_CONTENT_TYPE, basicSettings.getForbiddenMessage());
-      logger.debug("Sending login prompt header...");
-      resp.addHeader("WWW-Authenticate", "Basic");
-    }
-    else {
-      resp = new BytesRestResponse(RestStatus.FORBIDDEN, BytesRestResponse.TEXT_CONTENT_TYPE, basicSettings.getForbiddenMessage());
-    }
-
-    channel.sendResponse(resp);
-  }
-
-  private void sendNotFound(ResourceNotFoundException e, RestChannel channel) {
-    try {
-      XContentBuilder b = JsonXContent.contentBuilder();
-      b.startObject();
-      ElasticsearchException.renderException(b, ToXContent.EMPTY_PARAMS, e);
-      b.endObject();
-      BytesRestResponse resp;
-      resp = new BytesRestResponse(RestStatus.NOT_FOUND, "application/json", b.string());
-      channel.sendResponse(resp);
-    } catch (Exception e1) {
-      e1.printStackTrace();
-    }
   }
 
 }

@@ -39,15 +39,15 @@ import tech.beshu.ror.acl.definitions.ldaps.unboundid.UserGroupsSearchFilterConf
 import tech.beshu.ror.acl.definitions.ldaps.unboundid.UserSearchFilterConfig;
 import tech.beshu.ror.acl.definitions.users.User;
 import tech.beshu.ror.acl.definitions.users.UserFactory;
+import tech.beshu.ror.commons.shims.es.ESContext;
 import tech.beshu.ror.httpclient.ApacheHttpCoreClient;
+import tech.beshu.ror.httpclient.HttpClient;
 import tech.beshu.ror.settings.definitions.AuthenticationLdapSettings;
 import tech.beshu.ror.settings.definitions.ExternalAuthenticationServiceSettings;
 import tech.beshu.ror.settings.definitions.GroupsProviderLdapSettings;
 import tech.beshu.ror.settings.definitions.UserGroupsProviderSettings;
 import tech.beshu.ror.settings.definitions.UserSettings;
 import tech.beshu.ror.settings.rules.NamedSettings;
-import tech.beshu.ror.commons.shims.es.ESContext;
-import tech.beshu.ror.httpclient.HttpClient;
 
 import java.util.function.Supplier;
 
@@ -60,7 +60,7 @@ public class DefinitionsFactory implements LdapClientFactory,
   GroupsProviderServiceClientFactory,
   UserFactory {
 
-  private final HttpClient httpClient;
+  //private final HttpClient httpClient;
   private final ESContext context;
   private final Cache<String, GroupsProviderLdapClient> groupsProviderLdapClientsCache;
   private final Cache<String, AuthenticationLdapClient> authenticationLdapClientsCache;
@@ -70,7 +70,7 @@ public class DefinitionsFactory implements LdapClientFactory,
 
   public DefinitionsFactory(ESContext context, ACL acl) {
     this.acl = acl;
-    this.httpClient = new ApacheHttpCoreClient(context);
+    //this.httpClient = new ApacheHttpCoreClient(context);
     this.context = context;
     this.groupsProviderLdapClientsCache = CacheBuilder.newBuilder().build();
     this.authenticationLdapClientsCache = CacheBuilder.newBuilder().build();
@@ -106,7 +106,9 @@ public class DefinitionsFactory implements LdapClientFactory,
               settings.getSearchGroupBaseDn(),
               settings.getUniqueMemberAttribute(),
               settings.getGroupSearchFilter(),
-              settings.getGroupNameAttribute()
+              settings.getGroupNameAttribute(),
+              settings.isGroupsFromUser(),
+              settings.getGroupsFromUserAttribute()
             ),
             settings.getSearchingUserSettings().map(s ->
                                                       new SearchingUserConfig(s.getDn(), s.getPassword())
@@ -160,7 +162,7 @@ public class DefinitionsFactory implements LdapClientFactory,
       () -> wrapInCacheIfCacheIsEnabled(
         settings,
         new ExternalAuthenticationServiceHttpClient(
-          httpClient,
+          new ApacheHttpCoreClient(context, settings.getValidate()),
           settings.getEndpoint(),
           settings.getSuccessStatusCode()
         )
@@ -177,7 +179,7 @@ public class DefinitionsFactory implements LdapClientFactory,
         settings,
         new GroupsProviderServiceHttpClient(
           settings.getName(),
-          httpClient,
+          new ApacheHttpCoreClient(context, true),
           settings.getEndpoint(),
           settings.getAuthTokenName(),
           settings.getAuthTokenPassedMethod(),

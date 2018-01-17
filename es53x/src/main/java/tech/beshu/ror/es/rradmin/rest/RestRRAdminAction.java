@@ -22,14 +22,15 @@ package tech.beshu.ror.es.rradmin.rest;
 import org.elasticsearch.client.node.NodeClient;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.settings.Settings;
-import tech.beshu.ror.es.rradmin.RRAdminAction;
-import tech.beshu.ror.es.rradmin.RRAdminRequest;
-import tech.beshu.ror.es.rradmin.RRAdminResponse;
 import org.elasticsearch.rest.BaseRestHandler;
 import org.elasticsearch.rest.RestController;
 import org.elasticsearch.rest.RestHandler;
 import org.elasticsearch.rest.RestRequest;
 import org.elasticsearch.rest.action.RestToXContentListener;
+import tech.beshu.ror.commons.Constants;
+import tech.beshu.ror.es.rradmin.RRAdminAction;
+import tech.beshu.ror.es.rradmin.RRAdminRequest;
+import tech.beshu.ror.es.rradmin.RRAdminResponse;
 
 import java.io.IOException;
 
@@ -40,7 +41,10 @@ public class RestRRAdminAction extends BaseRestHandler implements RestHandler {
   @Inject
   public RestRRAdminAction(Settings settings, RestController controller) {
     super(settings);
-    controller.registerHandler(RestRequest.Method.POST, "/_readonlyrest/admin/refreshconfig", this);
+    controller.registerHandler(RestRequest.Method.POST, Constants.REST_REFRESH_PATH, this);
+    controller.registerHandler(RestRequest.Method.GET, Constants.REST_CONFIGURATION_PATH, this);
+    controller.registerHandler(RestRequest.Method.POST, Constants.REST_CONFIGURATION_PATH, this);
+    controller.registerHandler(RestRequest.Method.GET, Constants.REST_CONFIGURATION_FILE_PATH, this);
   }
 
 
@@ -51,7 +55,11 @@ public class RestRRAdminAction extends BaseRestHandler implements RestHandler {
   @Override
   protected RestChannelConsumer prepareRequest(RestRequest request, NodeClient client) throws IOException {
     return (channel) -> {
-      client.execute(RRAdminAction.INSTANCE, new RRAdminRequest(), new RestToXContentListener<RRAdminResponse>(channel));
+      client.execute(
+        new RRAdminAction(),
+        new RRAdminRequest(request.method().name(), request.path(), request.content().utf8ToString()),
+        new RestToXContentListener<RRAdminResponse>(channel)
+      );
     };
   }
 }

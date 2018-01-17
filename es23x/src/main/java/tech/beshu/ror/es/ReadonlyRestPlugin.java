@@ -19,8 +19,10 @@ package tech.beshu.ror.es;
 
 import org.elasticsearch.action.ActionModule;
 import org.elasticsearch.client.node.NodeClient;
+import org.elasticsearch.common.component.LifecycleComponent;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.inject.Module;
+import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.http.HttpServerModule;
 import org.elasticsearch.plugins.Plugin;
 import org.elasticsearch.rest.RestChannel;
@@ -29,14 +31,27 @@ import org.elasticsearch.rest.RestFilter;
 import org.elasticsearch.rest.RestFilterChain;
 import org.elasticsearch.rest.RestRequest;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
 
 public class ReadonlyRestPlugin extends Plugin {
   static CompletableFuture<NodeClient> clientFuture = new CompletableFuture<>();
+  private final Settings settings;
 
+  public ReadonlyRestPlugin(Settings settings) {
+    this.settings = settings;
+  }
+
+  @Override
+  public Collection<Class<? extends LifecycleComponent>> nodeServices() {
+    List l = new ArrayList(1);
+    l.add(ESShutdownListener.class);
+    return l;
+  }
 
   @Override
   public String name() {

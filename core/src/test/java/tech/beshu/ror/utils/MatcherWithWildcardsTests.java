@@ -52,11 +52,13 @@ public class MatcherWithWildcardsTests {
     MatcherWithWildcards m = new MatcherWithWildcards(Sets.newHashSet("c*"));
     assertFalse(m.match("xxxcxxx"));
   }
+
   @Test
   public void testAlessandro() {
     MatcherWithWildcards m = new MatcherWithWildcards(Sets.newHashSet("streams_dev-*"));
     assertTrue(m.match("streams_dev-rfh"));
   }
+
   @Test
   public void testNoMatchStarPatternLeft() {
     MatcherWithWildcards m = new MatcherWithWildcards(Sets.newHashSet("*c"));
@@ -75,5 +77,12 @@ public class MatcherWithWildcardsTests {
       Sets.newHashSet("<no-index>", ".kibana", ".kibana-devnull", "logstash-*", "default")
     );
     assertTrue(m.match(".kibana"));
+  }
+
+
+  @Test
+  public void testZeroCharGlob() {
+    MatcherWithWildcards m = new MatcherWithWildcards(Sets.newHashSet("perf*mon_my_test*"));
+    assertTrue(m.match("perfmon_my_test1"));
   }
 }

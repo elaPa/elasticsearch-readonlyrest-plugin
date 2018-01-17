@@ -17,8 +17,11 @@
 
 package tech.beshu.ror.es;
 
+import cz.seznam.euphoria.shaded.guava.com.google.common.util.concurrent.FutureCallback;
 import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.ResourceNotFoundException;
+import org.elasticsearch.action.ActionListener;
+import org.elasticsearch.action.bulk.BulkResponse;
 import org.elasticsearch.action.get.GetResponse;
 import org.elasticsearch.client.node.NodeClient;
 import org.elasticsearch.cluster.health.ClusterHealthStatus;
@@ -26,10 +29,15 @@ import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.inject.Singleton;
 import org.elasticsearch.common.logging.Loggers;
 import org.elasticsearch.common.settings.Settings;
-import tech.beshu.ror.commons.SettingsObservable;
+import org.elasticsearch.common.xcontent.XContentType;
+import org.elasticsearch.env.Environment;
+import tech.beshu.ror.commons.settings.BasicSettings;
+import tech.beshu.ror.commons.settings.RawSettings;
+import tech.beshu.ror.commons.settings.SettingsObservable;
+import tech.beshu.ror.commons.settings.SettingsUtils;
 import tech.beshu.ror.commons.shims.es.LoggerShim;
 
-import java.io.IOException;
+import java.nio.file.Path;
 import java.util.Map;
 
 /**
@@ -39,15 +47,21 @@ import java.util.Map;
 @Singleton
 public class SettingsObservableImpl extends SettingsObservable {
   private static final LoggerShim logger = ESContextImpl.mkLoggerShim(Loggers.getLogger(SettingsObservableImpl.class));
+  private final Settings initialSettings;
 
+  // To be set later because DI doesn't work
   private NodeClient client;
-  private Settings settings;
 
   @Inject
-  public SettingsObservableImpl(Settings settings) throws IOException {
-    this.settings = settings;
+  public SettingsObservableImpl( Settings s) {
+    current = BasicSettings.fromFile(logger, new Environment(s).configFile(), s.getAsStructuredMap()).getRaw();
+    this.initialSettings = s;
+  }
 
-    current = this.getFromFile();
+  @Override
+  protected Path getConfigPath() {
+    Environment environment = new Environment(initialSettings);
+    return environment.configFile();
   }
 
   @Override
@@ -55,27 +69,7 @@ public class SettingsObservableImpl extends SettingsObservable {
     return logger;
   }
 
-  public void setClient(NodeClient client) {
-    this.client = client;
-  }
-
-  @Override
-  protected Map<String, ?> getFomES() {
-    return settings.getAsStructuredMap();
-  }
-
-
-  public void forceRefresh() {
-    setChanged();
-    notifyObservers();
-  }
-
-  @Override
-  public Map<String, ?> mkSettingsFromYAMLString(String yamlString) {
-    return Settings.builder().loadFromSource(yamlString).build().getAsStructuredMap();
-  }
-
-  protected Map<String, ?> getFromIndex() {
+  protected RawSettings getFromIndex() {
     GetResponse resp = null;
     try {
       resp = client.prepareGet(".readonlyrest", "settings", "1").get();
@@ -89,10 +83,29 @@ public class SettingsObservableImpl extends SettingsObservable {
       throw new ElasticsearchException(SETTINGS_NOT_FOUND_MESSAGE);
     }
     String yamlString = (String) resp.getSource().get("settings");
-    Settings settingsFromIndex = Settings.builder().loadFromSource(yamlString).build();
-    return settingsFromIndex.getAsStructuredMap();
+    return new RawSettings(yamlString);
   }
 
+  @Override
+  protected void writeToIndex(RawSettings rawSettings, FutureCallback f) {
+    client.prepareBulk().add(
+      client.prepareIndex(".readonlyrest", "settings", "1")
+        .setSource(SettingsUtils.toJsonStorage(rawSettings.yaml()), XContentType.JSON).request()
+    ).execute().addListener(new ActionListener<BulkResponse>() {
+      @Override
+      public void onResponse(BulkResponse bulkItemResponses) {
+        logger.info("all ok, written settings");
+        f.onSuccess(bulkItemResponses);
+      }
+
+      @Override
+      public void onFailure(Throwable e) {
+        logger.error("could not write settings to index: ", e);
+        f.onFailure(e);
+      }
+    });
+
+  }
 
   @Override
   public boolean isClusterReady() {
@@ -105,4 +118,12 @@ public class SettingsObservableImpl extends SettingsObservable {
     }
   }
 
+  @Override
+  protected Map<String, ?> getNodeSettings() {
+    return initialSettings.getAsStructuredMap();
+  }
+
+  public void setClient(NodeClient client) {
+    this.client = client;
+  }
 }

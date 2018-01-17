@@ -16,9 +16,11 @@
  */
 package tech.beshu.ror.commons.shims.es;
 
-import tech.beshu.ror.commons.BasicSettings;
+import tech.beshu.ror.commons.settings.BasicSettings;
 
 public interface ESContext {
+
+  ESShutdownObservable getShutDownObservable();
 
   LoggerShim logger(Class<?> clazz);
 

@@ -1,6 +1,6 @@
-[![ghit.me](https://ghit.me/badge.svg?repo=sscarduzio/elasticsearch-readonlyrest-plugin)](https://ghit.me/repo/sscarduzio/elasticsearch-readonlyrest-plugin)
 [![Codacy Badge](https://api.codacy.com/project/badge/grade/9ef51ae1e6e34deba913f22e2e4cbd56)](https://www.codacy.com/app/scarduzio/elasticsearch-readonlyrest-plugin)
 [![Build Status](https://travis-ci.org/sscarduzio/elasticsearch-readonlyrest-plugin.svg?branch=master)](https://travis-ci.org/sscarduzio/elasticsearch-readonlyrest-plugin)
+[![Twitter URL](https://img.shields.io/twitter/url/http/shields.io.svg?style=social)](https://twitter.com/readonlyrest)
 [![Patreon](http://i.imgur.com/Fw6Kft4.png)](https://www.patreon.com/readonlyrest)
 
 ## ReadonlyREST needs your help ⚠️
@@ -29,15 +29,12 @@ In other words... no more proxies! Yay Ponies!
 
 ### 2. Configuration
 
-Append either of these snippets to `conf/elasticsearch.yml`
+Append either of these snippets to `config/readonlyrest.yml`
 
 ### USE CASE: Secure public searchbox from [ransomware](http://code972.com/blog/2017/01/107-dont-be-ransacked-securing-your-elasticsearch-cluster-properly)
 ```yml
 readonlyrest:
     access_control_rules: 
-    
-    - name: "Accept all requests from localhost"
-      hosts: [127.0.0.1]
 
     - name: "::PUBLIC SEARCHBOX::"
       indices: ["public"]
@@ -46,8 +43,14 @@ readonlyrest:
 
 ### USE CASE: Enable HTTPS globally
 Remember to enable SSL whenever you use HTTP basic auth or API keys so your credentials can't be stolen.
+
+add this to `config/elasticsearch.yml`:
 ```yml
-http.type: ssl_netty4
+http.type: ssl_netty4 
+```
+
+And then add this to `conf/readonlyrest.yml`
+```yml
 readonlyrest:
     enable: true # optional, defaults=true if at least 1 "access_control_rules" block
     

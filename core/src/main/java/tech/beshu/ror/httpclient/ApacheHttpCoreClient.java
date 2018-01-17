@@ -17,36 +17,68 @@
 
 package tech.beshu.ror.httpclient;
 
+import java.io.IOException;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.security.AccessController;
+import java.security.KeyManagementException;
+import java.security.KeyStoreException;
+import java.security.NoSuchAlgorithmException;
+import java.security.PrivilegedAction;
+import java.security.cert.X509Certificate;
+import java.util.concurrent.CompletableFuture;
+import java.util.stream.Collectors;
+
 import org.apache.http.HttpResponse;
 import org.apache.http.client.methods.HttpGet;
 import org.apache.http.client.utils.URIBuilder;
 import org.apache.http.concurrent.FutureCallback;
+import org.apache.http.conn.ssl.NoopHostnameVerifier;
 import org.apache.http.impl.nio.client.CloseableHttpAsyncClient;
 import org.apache.http.impl.nio.client.HttpAsyncClients;
 import org.apache.http.message.BasicNameValuePair;
+import org.apache.http.ssl.SSLContexts;
+
 import tech.beshu.ror.commons.shims.es.ESContext;
 import tech.beshu.ror.commons.shims.es.LoggerShim;
-
-import java.io.IOException;
-import java.net.URI;
-import java.net.URISyntaxException;
-import java.util.concurrent.CompletableFuture;
-import java.util.stream.Collectors;
 
 
 /**
  * Created by sscarduzio on 03/07/2017.
  */
 public class ApacheHttpCoreClient implements HttpClient {
-  private final CloseableHttpAsyncClient hcHttpClient;
+  private  CloseableHttpAsyncClient hcHttpClient;
   private final LoggerShim logger;
   private final ESContext context;
 
-  public ApacheHttpCoreClient(ESContext esContext) {
-    this.hcHttpClient = HttpAsyncClients.createDefault();
-    this.hcHttpClient.start();
+  private CloseableHttpAsyncClient getNonValidatedHttpClient() {
+	  try {
+		return HttpAsyncClients.custom().setSSLHostnameVerifier(new NoopHostnameVerifier()).setSSLContext(SSLContexts.custom().loadTrustMaterial(null, (X509Certificate[] chain, String authType) -> true).build()).build();
+	} catch (KeyManagementException | NoSuchAlgorithmException | KeyStoreException e) {
+		logger.error("cannot create non-validating Apache HTTP Core client.. ", e);
+		return HttpAsyncClients.createDefault() ;
+	} 
+  }
+  public ApacheHttpCoreClient(ESContext esContext, boolean validate) {
+    AccessController.doPrivileged((PrivilegedAction<Void>) () -> {
+      this.hcHttpClient = validate?HttpAsyncClients.createDefault():getNonValidatedHttpClient();
+      this.hcHttpClient.start();
+      return null;
+    });
     this.logger = esContext.logger(getClass());
     this.context = esContext;
+    esContext.getShutDownObservable().addObserver((x,y) -> {
+      try {
+        hcHttpClient.close();
+      } catch (IOException e) {
+        logger.error("cannot shut down Apache HTTP Core client.. ", e);
+      }
+    });
+  }
+
+  @Override
+  protected void finalize() throws Throwable {
+    hcHttpClient.close();
   }
 
   @Override
@@ -69,23 +101,27 @@ public class ApacheHttpCoreClient implements HttpClient {
     final HttpGet hcRequest = new HttpGet(uri);
     request.getHeaders().entrySet().forEach(e -> hcRequest.addHeader(e.getKey(), e.getValue()));
 
-    hcHttpClient.execute(hcRequest, new FutureCallback<HttpResponse>() {
+    AccessController.doPrivileged((PrivilegedAction<Void>) () -> {
 
-      public void completed(final HttpResponse hcResponse) {
-        int statusCode = hcResponse.getStatusLine().getStatusCode();
-        logger.debug("HTTP REQ SUCCESS with status: " + statusCode + " " + request);
-        promise.complete(hcResponse);
-      }
+      hcHttpClient.execute(hcRequest, new FutureCallback<HttpResponse>() {
 
-      public void failed(final Exception ex) {
-        logger.debug("HTTP REQ FAILED " + request);
-        logger.info("HTTP client failed to connect: " + request + " reason: " + ex.getMessage());
-        promise.completeExceptionally(ex);
-      }
+        public void completed(final HttpResponse hcResponse) {
+          int statusCode = hcResponse.getStatusLine().getStatusCode();
+          logger.debug("HTTP REQ SUCCESS with status: " + statusCode + " " + request);
+          promise.complete(hcResponse);
+        }
 
-      public void cancelled() {
-        promise.completeExceptionally(new RuntimeException("HTTP REQ CANCELLED: " + request));
-      }
+        public void failed(final Exception ex) {
+          logger.debug("HTTP REQ FAILED " + request);
+          logger.info("HTTP client failed to connect: " + request + " reason: " + ex.getMessage());
+          promise.completeExceptionally(ex);
+        }
+
+        public void cancelled() {
+          promise.completeExceptionally(new RuntimeException("HTTP REQ CANCELLED: " + request));
+        }
+      });
+      return null;
     });
 
     return promise.thenApply(hcResp -> new RRHttpResponse(hcResp.getStatusLine().getStatusCode(), () -> {

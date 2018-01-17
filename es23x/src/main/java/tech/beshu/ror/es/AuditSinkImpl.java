@@ -17,7 +17,6 @@
 
 package tech.beshu.ror.es;
 
-import org.apache.logging.log4j.Logger;
 import org.elasticsearch.action.bulk.BackoffPolicy;
 import org.elasticsearch.action.bulk.BulkProcessor;
 import org.elasticsearch.action.bulk.BulkRequest;
@@ -32,7 +31,7 @@ import org.elasticsearch.common.unit.ByteSizeUnit;
 import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.xcontent.XContentType;
-import tech.beshu.ror.commons.BasicSettings;
+import tech.beshu.ror.commons.settings.BasicSettings;
 
 import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
@@ -55,9 +54,11 @@ public class AuditSinkImpl {
   private final BulkProcessor bulkProcessor;
   private final BasicSettings settings;
 
-  @Inject
   public AuditSinkImpl(Client client, BasicSettings settings) {
     this.settings = settings;
+    if(client == null){
+      new Exception("client was null").printStackTrace();
+    }
 
     if (!settings.isAuditorCollectorEnabled()) {
       bulkProcessor = null;

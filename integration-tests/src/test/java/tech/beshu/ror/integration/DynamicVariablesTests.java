@@ -56,9 +56,8 @@ public class DynamicVariablesTests {
 
     String docPath = "/" + indexName + "/documents/doc-asd";
     try {
-      HttpPut request = new HttpPut(restClient.from(
-        docPath
-      ));
+      HttpPut request = new HttpPut(restClient.from(docPath) + "?refresh=true");
+      request.setHeader("Content-Type", "application/json");
       request.setHeader("refresh", "true");
       request.setHeader("timeout", "50s");
       request.setEntity(new StringEntity("{\"title\": \"" + indexName + "\"}"));
@@ -69,19 +68,6 @@ public class DynamicVariablesTests {
       throw new IllegalStateException("Test problem", e);
     }
 
-    // Polling phase.. #TODO is there a better way?
-    try {
-      HttpResponse response;
-      do {
-        Thread.sleep(200);
-        HttpHead request = new HttpHead(restClient.from(docPath));
-        response = restClient.execute(request);
-        System.out.println("polling for " + indexName + ".. result: " + response.getStatusLine().getReasonPhrase());
-      } while (response.getStatusLine().getStatusCode() != 200);
-    } catch (Exception e) {
-      e.printStackTrace();
-      throw new IllegalStateException("Cannot configure test case", e);
-    }
   }
 
   private static String body(HttpResponse r) throws Exception {
@@ -93,7 +79,6 @@ public class DynamicVariablesTests {
     String body = search("/.kibana_simone/_search");
     assertTrue(body.contains("asd"));
   }
-
 
   private String search(String endpoint) throws Exception {
     String caller = Thread.currentThread().getStackTrace()[2].getMethodName();

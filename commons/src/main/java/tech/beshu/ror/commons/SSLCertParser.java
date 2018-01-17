@@ -17,18 +17,18 @@
 
 package tech.beshu.ror.commons;
 
+import cz.seznam.euphoria.shaded.guava.com.google.common.base.Joiner;
+import tech.beshu.ror.commons.settings.BasicSettings;
+import tech.beshu.ror.commons.settings.SettingsMalformedException;
 import tech.beshu.ror.commons.shims.es.LoggerShim;
 
-import java.io.File;
+import javax.net.ssl.SSLEngine;
 import java.io.FileInputStream;
-import java.io.IOException;
 import java.security.AccessControlException;
 import java.security.AccessController;
 import java.security.Key;
-import java.security.NoSuchAlgorithmException;
 import java.security.PrivilegedAction;
 import java.security.cert.Certificate;
-import java.security.cert.CertificateException;
 import java.util.Base64;
 
 /**
@@ -45,12 +45,38 @@ public class SSLCertParser {
     createContext(settings);
   }
 
+  public static boolean validateProtocolAndCiphers(SSLEngine eng, LoggerShim logger, BasicSettings basicSettings) {
+    try {
+      String[] defaultProtocols = eng.getEnabledProtocols();
+
+      logger.info("ROR SSL: Available ciphers: " + Joiner.on(",").join(eng.getEnabledCipherSuites()));
+      basicSettings.getAllowedSSLCiphers()
+        .map(x -> x.toArray(new String[x.size()]))
+        .ifPresent(p -> {
+          eng.setEnabledCipherSuites(p);
+          logger.info("ROR SSL: Restricting to ciphers: " + Joiner.on(",").join(eng.getEnabledCipherSuites()));
+        });
+
+      logger.info("ROR SSL: Available SSL protocols: " + Joiner.on(",").join(defaultProtocols));
+      basicSettings.getAllowedSSLProtocols()
+        .map(x -> x.toArray(new String[x.size()]))
+        .ifPresent(p -> {
+          eng.setEnabledProtocols(p);
+          logger.info("ROR SSL: Restricting to SSL protocols: " + Joiner.on(",").join(eng.getEnabledProtocols()));
+        });
+      return true;
+    } catch (Exception e) {
+      logger.error("ROR SSL: cannot validate SSL protocols and ciphers! " + e.getClass().getSimpleName() + ": " + e.getMessage(), e);
+      return false;
+    }
+  }
+
   private void createContext(BasicSettings settings) {
     if (!settings.isSSLEnabled()) {
-      logger.info("SSL is disabled");
+      logger.info("ROR SSL: SSL is disabled");
       return;
     }
-    logger.info("SSL: attempting with JKS keystore..");
+    logger.info("ROR SSL: attempting with JKS keystore..");
     try {
       char[] keyStorePassBa = null;
       if (settings.getKeystorePass().isPresent()) {
@@ -63,7 +89,7 @@ public class SSLCertParser {
       AccessController.doPrivileged((PrivilegedAction<Void>) () -> {
 
         try {
-          String keystoreFile = Constants.makeAbsolutePath(settings.getKeystoreFile());
+          String keystoreFile = settings.getKeystoreFile();
           ks.load(new FileInputStream(keystoreFile), finKeystoerPassBa);
         } catch (Exception e) {
           e.printStackTrace();
@@ -82,7 +108,7 @@ public class SSLCertParser {
       if (!settings.getKeyAlias().isPresent()) {
         if (ks.aliases().hasMoreElements()) {
           String inferredAlias = ks.aliases().nextElement();
-          logger.info("SSL ssl.key_alias not configured, took first alias in keystore: " + inferredAlias);
+          logger.info("ROR SSL: ssl.key_alias not configured, took first alias in keystore: " + inferredAlias);
           sslKeyAlias = inferredAlias;
         }
         else {
@@ -105,7 +131,7 @@ public class SSLCertParser {
       sb.append("\n");
       sb.append("---END PRIVATE KEY---");
       String privateKey = sb.toString();
-      logger.info("Discovered key from JKS");
+      logger.info("ROR SSL: Discovered key from JKS");
 
       // Get CertChain from keystore
       Certificate[] cchain = ks.getCertificateChain(sslKeyAlias);
@@ -119,7 +145,7 @@ public class SSLCertParser {
         sb.append("-----END CERTIFICATE-----\n");
       }
       String certChain = sb.toString();
-      logger.info("Discovered cert chain from JKS");
+      logger.info("ROR SSL: Discovered cert chain from JKS");
 
 
       AccessController.doPrivileged(
@@ -129,9 +155,9 @@ public class SSLCertParser {
         });
 
     } catch (Throwable t) {
-      logger.error("Failed to load SSL certs and keys from JKS Keystore!");
+      logger.error("ROR SSL: Failed to load SSL certs and keys from JKS Keystore!");
       if (t instanceof AccessControlException) {
-        logger.error("Check the JKS Keystore path is correct: " + settings.getKeystoreFile());
+        logger.error("ROR SSL: Check the JKS Keystore path is correct: " + settings.getKeystoreFile());
       }
       t.printStackTrace();
     }

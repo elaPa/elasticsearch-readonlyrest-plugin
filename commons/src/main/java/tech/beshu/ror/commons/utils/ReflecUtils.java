@@ -41,24 +41,24 @@ public class ReflecUtils {
 
   public static Object invokeMethodCached(Object o, Class c, String method) {
     final Object[] result = new Object[1];
-    String cacheKey = c.getName() + method;
+    String cacheKey = c.getName() + "#" + method;
 
-    AccessController.doPrivileged((PrivilegedAction<Void>) () -> {
+    return AccessController.doPrivileged((PrivilegedAction<Object>) () -> {
       try {
         Method m = methodsCache.get(cacheKey);
         if (m != null) {
           result[0] = m.invoke(o);
           return null;
         }
-        m = c.getMethod(method);
+        m = c.getDeclaredMethod(method);
+        m.setAccessible(true);
         methodsCache.put(cacheKey, m);
-        result[0] = m.invoke(o);
+        return m.invoke(o);
       } catch (Exception e) {
         e.printStackTrace();
+        return null;
       }
-      return null;
     });
-    return result[0];
   }
 
   public static String[] extractStringArrayFromPrivateMethod(String methodName, Object o, ESContext context) {

@@ -30,25 +30,23 @@ import org.elasticsearch.cluster.metadata.IndexNameExpressionResolver;
 import org.elasticsearch.common.component.AbstractComponent;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.inject.Singleton;
-import org.elasticsearch.common.logging.Loggers;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.xcontent.ToXContent;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.common.xcontent.json.JsonXContent;
+import org.elasticsearch.env.Environment;
 import org.elasticsearch.rest.BytesRestResponse;
 import org.elasticsearch.rest.RestChannel;
 import org.elasticsearch.rest.RestStatus;
 import org.elasticsearch.tasks.Task;
 import org.elasticsearch.threadpool.ThreadPool;
-import org.elasticsearch.transport.TransportService;
 import tech.beshu.ror.acl.ACL;
-import tech.beshu.ror.commons.BasicSettings;
-import tech.beshu.ror.commons.RawSettings;
+import tech.beshu.ror.commons.settings.BasicSettings;
+import tech.beshu.ror.commons.settings.RawSettings;
 import tech.beshu.ror.commons.shims.es.ACLHandler;
 import tech.beshu.ror.commons.shims.es.ESContext;
 import tech.beshu.ror.commons.shims.es.LoggerShim;
 
-import java.io.IOException;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -59,44 +57,47 @@ import java.util.concurrent.atomic.AtomicReference;
 @Singleton
 public class IndexLevelActionFilter extends AbstractComponent implements ActionFilter {
 
-  private final ThreadPool threadPool;
   private final ClusterService clusterService;
 
   private final AtomicReference<Optional<ACL>> acl;
   private final AtomicReference<ESContext> context = new AtomicReference<>();
-  private final LoggerShim logger;
+  private final LoggerShim loggerShim;
   private final IndexNameExpressionResolver indexResolver;
+
   private NodeClient client;
 
   @Inject
   public IndexLevelActionFilter(Settings settings,
                                 ClusterService clusterService,
-                                TransportService transportService,
-                                ThreadPool threadPool,
-                                SettingsObservableImpl settingsObservable,
-                                IndexNameExpressionResolver indexResolver
-  )
-    throws IOException {
+                                SettingsObservableImpl settingsObservable
+  ) {
     super(settings);
 
-    this.logger = ESContextImpl.mkLoggerShim(Loggers.getLogger(getClass()));
+    loggerShim = ESContextImpl.mkLoggerShim(logger);
 
+    Environment env = new Environment(settings);
+    BasicSettings baseSettings = BasicSettings.fromFile(loggerShim, env.configFile().toAbsolutePath(), settings.getAsStructuredMap());
+
+    //this.context.set(new ESContextImpl(client, baseSettings));
+
+    this.indexResolver = new IndexNameExpressionResolver(settings);
     this.clusterService = clusterService;
-    this.indexResolver = indexResolver;
-    this.threadPool = threadPool;
     this.acl = new AtomicReference<>(Optional.empty());
-
-    new TaskManagerWrapper(settings).injectIntoTransportService(transportService, logger);
 
 
     ReadonlyRestPlugin.clientFuture.thenAccept(c -> {
 
       // Have to do this because guice goes crazy otherwise..
       settingsObservable.setClient(c);
+      this.client = c;
 
       settingsObservable.addObserver((o, arg) -> {
         logger.info("Settings observer refreshing...");
-        ESContext newContext = new ESContextImpl(client, new BasicSettings(new RawSettings(settingsObservable.getCurrent())));
+        Environment newEnv = new Environment(settings);
+        RawSettings raw = new RawSettings(settingsObservable.getCurrent().asMap());
+        BasicSettings newBasicSettings = new BasicSettings(raw, newEnv.configFile().toAbsolutePath());
+        ESContext newContext = new ESContextImpl(client, newBasicSettings);
+        this.context.set(newContext);
 
         if (newContext.getSettings().isEnabled()) {
           try {
@@ -105,6 +106,7 @@ public class IndexLevelActionFilter extends AbstractComponent implements ActionF
             logger.info("Configuration reloaded - ReadonlyREST enabled");
           } catch (Exception ex) {
             logger.error("Cannot configure ReadonlyREST plugin", ex);
+            throw ex;
           }
         }
         else {
@@ -123,10 +125,17 @@ public class IndexLevelActionFilter extends AbstractComponent implements ActionF
       });
 
 
-    });
+    })
+      .thenApply(x -> {
+        settingsObservable.forceRefresh();
+        logger.info("Readonly REST plugin was loaded...");
+        return null;
+      })
+      .exceptionally(e -> {
+        e.printStackTrace();
+        return null;
+      });
 
-    settingsObservable.forceRefresh();
-    logger.info("Readonly REST plugin was loaded...");
 
   }
 
@@ -175,11 +184,17 @@ public class IndexLevelActionFilter extends AbstractComponent implements ActionF
       chain.proceed(task, action, request, listener);
       return;
     }
-    RequestInfo requestInfo = new RequestInfo(channel, action, request, clusterService, threadPool, context.get(), indexResolver);
+    RequestInfo requestInfo = new RequestInfo(channel, task.getId(), action, request, clusterService, context.get(), indexResolver);
     acl.check(requestInfo, new ACLHandler() {
       @Override
       public void onForbidden() {
         sendNotAuthResponse(channel, context.get().getSettings());
+        try {
+          listener.onFailure(null);
+        }
+        catch (Exception e){
+          // Hack so we cancel the task
+        }
       }
 
       @Override
@@ -216,6 +231,12 @@ public class IndexLevelActionFilter extends AbstractComponent implements ActionF
       @Override
       public void onErrored(Throwable t) {
         sendNotAuthResponse(channel, context.get().getSettings());
+        try {
+          listener.onFailure(null);
+        }
+        catch (Exception e){
+          // Hack so we cancel the task
+        }
       }
     });
 
