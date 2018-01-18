@@ -16,21 +16,27 @@
  */
 package tech.beshu.ror.requestcontext;
 
+import com.google.common.collect.Sets;
 import cz.seznam.euphoria.shaded.guava.com.google.common.collect.Maps;
 import tech.beshu.ror.commons.ResponseContext;
 import tech.beshu.ror.commons.shims.request.RequestContextShim;
 
 import java.text.SimpleDateFormat;
-import java.util.Collections;
-import java.util.LinkedHashMap;
-import java.util.Map;
-import java.util.TimeZone;
+import java.util.*;
+import java.util.stream.Collectors;
 
 public class DefaultAuditLogSerializer implements AuditLogSerializer<Map<String, ?>> {
   private final static SimpleDateFormat zuluFormat = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'");
+  private final static Set<String> whitelistedHeaders;
 
   static {
     zuluFormat.setTimeZone(TimeZone.getTimeZone("GMT"));
+
+    if (System.getProperty("whitelistedHeaders") != null) {
+      whitelistedHeaders = Sets.newHashSet(System.getProperty("whitelistedHeaders").split(","));
+    } else {
+      whitelistedHeaders = new HashSet<>();
+    }
   }
 
   @Override
@@ -62,12 +68,19 @@ public class DefaultAuditLogSerializer implements AuditLogSerializer<Map<String,
     map.put("req_method", req.getMethodString());
     map.put("headers", req.getHeaders().keySet());
     map.put("path", req.getUri());
+    if (whitelistedHeaders.size() > 0) {
+            Map<String, String> filteredHeardes = req.getHeaders().entrySet().stream()
+                            .filter(entry -> whitelistedHeaders.contains(entry.getKey()))
+                            .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+            map.put("whitelisted_headers", filteredHeardes);
+          }
 
     map.put("user", req.getLoggedInUserName().orElse(null));
 
     map.put("action", req.getAction());
     map.put("indices", req.involvesIndices() ? req.getIndices() : Collections.emptySet());
     map.put("acl_history", req.getHistoryString());
+    map.put("body", req.getContent());
     return map;
   }
 }
