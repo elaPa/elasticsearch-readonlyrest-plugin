@@ -36,6 +36,8 @@ public interface RequestContextShim {
 
   String getHistoryString();
 
+  String getContent();
+
   Integer getContentLength();
 
   String getRemoteAddress();
